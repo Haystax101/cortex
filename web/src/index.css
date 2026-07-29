@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b0e14;
+  --color-panel: #10141d;
+  --color-panel-2: #151a26;
+  --color-edge: #1e2430;
+  --color-fog: #8b93a7;
+  --color-snow: #e6e9f0;
+  --color-pulse: #8b5cf6;
+  --color-pulse-soft: #a78bfa;
+  --color-wire: #22d3ee;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-snow);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-edge);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Markdown content inside chat bubbles */
+.prose-chat {
+  line-height: 1.65;
+  word-wrap: break-word;
+}
+.prose-chat > * + * {
+  margin-top: 0.65em;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  font-weight: 600;
+  color: var(--color-snow);
+  margin-top: 1em;
+}
+.prose-chat h1 { font-size: 1.25em; }
+.prose-chat h2 { font-size: 1.12em; }
+.prose-chat h3 { font-size: 1.02em; }
+.prose-chat a {
+  color: var(--color-wire);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-chat code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: rgba(139, 92, 246, 0.12);
+  border-radius: 4px;
+  padding: 0.12em 0.35em;
+}
+.prose-chat pre {
+  background: #0d1117;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+}
+.prose-chat pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.83em;
+}
+.prose-chat ul,
+.prose-chat ol {
+  padding-left: 1.4em;
+}
+.prose-chat ul { list-style: disc; }
+.prose-chat ol { list-style: decimal; }
+.prose-chat li + li { margin-top: 0.25em; }
+.prose-chat blockquote {
+  border-left: 3px solid var(--color-pulse);
+  padding-left: 0.9em;
+  color: var(--color-fog);
+}
+.prose-chat table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.prose-chat th,
+.prose-chat td {
+  border: 1px solid var(--color-edge);
+  padding: 0.35em 0.7em;
+}
+.prose-chat th {
+  background: var(--color-panel-2);
+}
+.prose-chat hr {
+  border-color: var(--color-edge);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
+}
+.tool-running-dot {
+  animation: pulse-dot 1.1s ease-in-out infinite;
+}
+
+@keyframes blink-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.stream-caret {
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  vertical-align: text-bottom;
+  background: var(--color-pulse-soft);
+  border-radius: 2px;
+  margin-left: 2px;
+  animation: blink-caret 0.9s step-end infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.thinking-shimmer {
+  background: linear-gradient(90deg, var(--color-fog) 25%, var(--color-snow) 50%, var(--color-fog) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
