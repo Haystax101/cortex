@@ -1,4 +1,4 @@
-import type { ServerFrame } from "./types";
+import type { ClientFrame, ServerFrame } from "./types";
 
 type FrameHandler = (frame: ServerFrame) => void;
 type StatusHandler = (connected: boolean) => void;
@@ -40,7 +40,7 @@ class WsClient {
     this.ws.onerror = () => this.ws?.close();
   }
 
-  send(frame: { type: "chat.send"; chatId: string | null; text: string } | { type: "chat.interrupt"; chatId: string }) {
+  send(frame: ClientFrame) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
       return true;

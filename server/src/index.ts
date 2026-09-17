@@ -3,10 +3,13 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BRAIN_DIR, PORT, DEFAULT_MODEL } from "./config.js";
-import { chatsRouter } from "./chats.js";
+import { BRAIN_DIR, HOST, PORT, DEFAULT_MODEL, FAST_MODEL } from "./config.js";
+import { chatsRouter, workspacesRouter } from "./chats.js";
 import { filesRouter } from "./files.js";
-import { attachWebSocket } from "./ws.js";
+import { attachWebSocket, broadcast } from "./ws.js";
+import { voiceRouter, warmTts } from "./voice.js";
+import { briefingRouter, setBriefingBroadcast, startBriefingScheduler } from "./briefing.js";
+import { loadSettings, updateSettings } from "./settings.js";
 
 if (!fs.existsSync(BRAIN_DIR)) {
   console.error(`Brain directory not found: ${BRAIN_DIR}`);
@@ -14,11 +17,23 @@ if (!fs.existsSync(BRAIN_DIR)) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 app.use("/api/chats", chatsRouter);
+app.use("/api/workspaces", workspacesRouter);
 app.use("/api/files", filesRouter);
-app.get("/api/health", (_req, res) => res.json({ ok: true, brain: BRAIN_DIR, model: DEFAULT_MODEL }));
+app.use("/api/voice", voiceRouter);
+app.use("/api/briefing", briefingRouter);
+
+app.get("/api/settings", (_req, res) => res.json(loadSettings()));
+app.patch("/api/settings", (req, res) => {
+  const allowed = ["voice", "speakReplies", "briefingHour", "ntfyTopic"] as const;
+  const patch: Record<string, unknown> = {};
+  for (const k of allowed) if (k in (req.body ?? {})) patch[k] = req.body[k];
+  res.json(updateSettings(patch));
+});
+
+app.get("/api/health", (_req, res) => res.json({ ok: true, brain: BRAIN_DIR, model: DEFAULT_MODEL, fastModel: FAST_MODEL }));
 
 // Serve the built frontend when it exists (production mode).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -34,11 +49,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 const server = http.createServer(app);
 attachWebSocket(server);
+setBriefingBroadcast(broadcast);
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, HOST, () => {
   const auth = process.env.ANTHROPIC_API_KEY ? "API key" : "Claude subscription (CLI login)";
-  console.log(`Cortex server → http://127.0.0.1:${PORT}`);
+  const s = loadSettings();
+  console.log(`Cortex server → http://${HOST}:${PORT}`);
   console.log(`  brain: ${BRAIN_DIR}`);
-  console.log(`  model: ${DEFAULT_MODEL}`);
+  console.log(`  model: ${DEFAULT_MODEL} (fast: ${FAST_MODEL})`);
   console.log(`  auth:  ${auth}`);
+  console.log(`  ntfy:  https://ntfy.sh/${s.ntfyTopic}`);
+  warmTts();
+  startBriefingScheduler();
 });

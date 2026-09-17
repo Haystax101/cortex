@@ -2,14 +2,20 @@ import type { Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { runTurn, type Run } from "./agent.js";
 import { toolLabel } from "./labels.js";
+import { createAsk, resolveAsk } from "./permissions.js";
 import type { ClientFrame, ServerFrame } from "./frames.js";
 
 // Chats with a turn in flight — also consulted by the delete endpoint.
 export const busyChats = new Set<string>();
 const activeRuns = new Map<string, Run>();
+const clients = new Set<WebSocket>();
 
 function send(ws: WebSocket, frame: ServerFrame) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+export function broadcast(frame: ServerFrame) {
+  for (const c of clients) send(c, frame);
 }
 
 async function pump(ws: WebSocket, run: Run, initialChatId: string | null) {
@@ -25,7 +31,7 @@ async function pump(ws: WebSocket, run: Run, initialChatId: string | null) {
             chatId = msg.session_id;
             busyChats.add(chatId);
             activeRuns.set(chatId, run);
-            send(ws, { type: "chat.session", chatId });
+            send(ws, { type: "chat.session", chatId, workspace: run.workspace.id });
           }
           break;
         }
@@ -54,14 +60,7 @@ async function pump(ws: WebSocket, run: Run, initialChatId: string | null) {
               } catch {
                 input = undefined;
               }
-              send(ws, {
-                type: "tool.end",
-                chatId,
-                toolId: tb.id,
-                name: tb.name,
-                label: toolLabel(tb.name, input),
-                input,
-              });
+              send(ws, { type: "tool.end", chatId, toolId: tb.id, name: tb.name, label: toolLabel(tb.name, input), input });
               toolBlocks.delete(e.index);
             }
           }
@@ -79,12 +78,7 @@ async function pump(ws: WebSocket, run: Run, initialChatId: string | null) {
           if (Array.isArray(content)) {
             for (const block of content) {
               if (block?.type === "tool_result") {
-                send(ws, {
-                  type: "tool.result",
-                  chatId,
-                  toolId: block.tool_use_id,
-                  isError: block.is_error === true,
-                });
+                send(ws, { type: "tool.result", chatId, toolId: block.tool_use_id, isError: block.is_error === true });
               }
             }
           }
@@ -117,7 +111,9 @@ export function attachWebSocket(server: Server) {
   const wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws) => {
+    clients.add(ws);
     let newChatPending = false;
+    ws.on("close", () => clients.delete(ws));
 
     ws.on("message", (raw) => {
       let frame: ClientFrame;
@@ -128,7 +124,7 @@ export function attachWebSocket(server: Server) {
       }
 
       if (frame.type === "chat.send") {
-        const { chatId, text } = frame;
+        const { chatId, text, workspace, voice } = frame;
         if (typeof text !== "string" || !text.trim()) return;
         if (chatId && busyChats.has(chatId)) {
           send(ws, { type: "chat.error", chatId, error: "A response is already in progress for this chat." });
@@ -139,18 +135,54 @@ export function attachWebSocket(server: Server) {
           return;
         }
         if (!chatId) newChatPending = true;
-        const run = runTurn(text, chatId);
-        void pump(ws, run, chatId).finally(() => {
+        // chatId is known once the init frame arrives; permission asks and
+        // workspace switches reference it through this box.
+        const box = { chatId: chatId ?? "" };
+        let run: Run;
+        try {
+          run = runTurn(text, chatId, {
+            workspaceId: workspace,
+            voice: !!voice,
+            ask: (toolName, label, input) =>
+              createAsk(box.chatId, toolName, label, input, (ask) =>
+                send(ws, { type: "permission.ask", id: ask.id, chatId: ask.chatId, toolName: ask.toolName, label: ask.label, input: ask.input }),
+              ),
+            hooks: {
+              onSwitchWorkspace: (target, reason) => send(ws, { type: "workspace.switch", chatId: box.chatId, workspace: target, reason }),
+            },
+          });
+        } catch (e) {
+          if (!chatId) newChatPending = false;
+          send(ws, { type: "chat.error", chatId, error: (e as Error).message });
+          return;
+        }
+        const origSend = send;
+        // Capture the session id for the box as soon as it is known.
+        const tap = (f: ServerFrame) => {
+          if (f.type === "chat.session") box.chatId = f.chatId;
+          origSend(ws, f);
+        };
+        void pumpWith(tap, run, chatId).finally(() => {
           if (!chatId) newChatPending = false;
         });
       } else if (frame.type === "chat.interrupt") {
         const run = activeRuns.get(frame.chatId);
-        if (run) {
-          run.q.interrupt().catch(() => run.abort.abort());
-        }
+        if (run) run.q.interrupt().catch(() => run.abort.abort());
+      } else if (frame.type === "permission.reply") {
+        if (resolveAsk(frame.id, !!frame.allow)) broadcast({ type: "permission.resolved", id: frame.id, allow: !!frame.allow });
       }
     });
   });
 
   return wss;
+}
+
+// pump() above sends straight to the socket; this variant routes through a tap
+// so callers can observe frames (used to learn the session id).
+async function pumpWith(tap: (f: ServerFrame) => void, run: Run, initialChatId: string | null) {
+  const fake = {
+    readyState: WebSocket.OPEN,
+    send: (s: string) => tap(JSON.parse(s) as ServerFrame),
+  } as unknown as WebSocket;
+  await pump(fake, run, initialChatId);
 }

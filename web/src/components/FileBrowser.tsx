@@ -41,8 +41,17 @@ export function FileBrowser() {
   const uploadFiles = useStore((s) => s.uploadFiles);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const filesOpen = useStore((s) => s.filesOpen);
+  const setFilesOpen = useStore((s) => s.setFilesOpen);
+
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l border-edge bg-panel">
+    <>
+      {filesOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setFilesOpen(false)} />}
+    <aside
+      className={`fixed inset-y-0 right-0 z-40 flex w-72 shrink-0 flex-col border-l border-edge bg-panel pt-[env(safe-area-inset-top)] transition-transform lg:static lg:z-auto lg:translate-x-0 ${
+        filesOpen ? "translate-x-0" : "translate-x-full"
+      }`}
+    >
       <div className="flex items-center justify-between px-4 py-3.5">
         <div className="text-xs font-semibold tracking-widest text-fog">BRAIN FILES</div>
         <div className="flex gap-1">
@@ -81,5 +90,6 @@ export function FileBrowser() {
         ~/brain · drag files anywhere to add to inbox
       </div>
     </aside>
+    </>
   );
 }

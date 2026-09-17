@@ -1,42 +1,127 @@
-import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
-import { BRAIN_DIR, DEFAULT_MODEL } from "./config.js";
+import { query, type Query, type PermissionResult, type PreToolUseHookInput, type HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import { BRAIN_DIR } from "./config.js";
+import { getWorkspace, type Workspace } from "./workspaces.js";
+import { AUTO_ALLOWED, isRiskyCommand } from "./permissions.js";
+import { makeCortexTools, CORTEX_TOOL_NAMES, type ToolHooks } from "./tools.js";
+import { toolLabel } from "./labels.js";
 
-export type Run = { q: Query; abort: AbortController };
+export type Run = { q: Query; abort: AbortController; workspace: Workspace };
 
-// The single place query() is called — cwd must always be BRAIN_DIR or resume breaks.
-export function runTurn(text: string, chatId: string | null): Run {
+export type TurnOptions = {
+  workspaceId?: string | null;
+  /** Spoken conversation: keep replies short and skip heavy markdown. */
+  voice?: boolean;
+  model?: string;
+  /** Guarded workspaces call this for risky commands; resolve true to allow. */
+  ask?: (toolName: string, label: string, input: unknown) => Promise<boolean>;
+  hooks?: ToolHooks;
+};
+
+const BASE_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "Glob",
+  "Grep",
+  "WebSearch",
+  "WebFetch",
+  "Bash",
+  "TodoWrite",
+  "Task",
+  "Skill",
+  ...CORTEX_TOOL_NAMES,
+];
+
+function today(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function systemAppend(ws: Workspace, voice: boolean): string {
+  const now = new Date();
+  const when = `${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, ${now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+  const parts: string[] = [];
+  parts.push(`You are Cortex, George's personal AI brain. Right now it is ${when} (local time). Today's journal is ${BRAIN_DIR}/journal/${today()}.md.`);
+  if (ws.id === "brain") {
+    parts.push("You are in the brain workspace: follow CLAUDE.md in this folder for the journal, memory, calendar, briefing and GTOD protocols.");
+  } else {
+    parts.push(
+      `You are working inside George's ${ws.name} repo at ${ws.cwd}. Follow that repo's CLAUDE.md and conventions. ` +
+        `George's brain at ${BRAIN_DIR} is attached: read ${BRAIN_DIR}/projects/ for the project file that matches this workspace before starting, ` +
+        `and when something meaningful is finished append a one-line entry to today's journal and tick it in the project file. ` +
+        `Edit code freely, run tests and builds, but never push, deploy, publish, or run anything destructive unless George says so in this conversation (a prompt will appear for those).`,
+    );
+  }
+  if (voice) {
+    parts.push(
+      "This turn arrived by voice and your reply will be read aloud. Answer in plain spoken sentences, at most four or five unless George asked for detail. No markdown headers, tables, bullet lists or code blocks; say file names and commands in words. If you need a decision, ask one question.",
+    );
+  } else {
+    parts.push("Replies are shown in a chat UI: conversational and readable, not a terminal dump.");
+  }
+  return parts.join("\n\n");
+}
+
+// The single place query() is called. cwd must be the workspace root so
+// session resume works (sessions are stored per cwd).
+export function runTurn(text: string, chatId: string | null, opts: TurnOptions = {}): Run {
+  const ws = getWorkspace(opts.workspaceId);
   const abort = new AbortController();
+  const guarded = ws.mode === "guarded";
+  const cortexTools = makeCortexTools(opts.hooks ?? {});
+
+  const canUseTool = async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
+    if (AUTO_ALLOWED.has(toolName) || toolName.startsWith("mcp__")) return { behavior: "allow", updatedInput: input };
+    if (toolName === "Bash") {
+      const cmd = String(input.command ?? "");
+      if (!isRiskyCommand(cmd)) return { behavior: "allow", updatedInput: input };
+      if (!opts.ask) return { behavior: "deny", message: "Risky command blocked: no one is available to approve it. Ask George to run it or approve it in the app." };
+      const ok = await opts.ask(toolName, toolLabel(toolName, input), input);
+      return ok
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: "George declined this command. Do not retry it; explain what you would have done and continue otherwise." };
+    }
+    return { behavior: "allow", updatedInput: input };
+  };
+
+  // Belt and braces: allowlisted tools skip canUseTool, but PreToolUse hooks
+  // always fire, so risky Bash in a guarded workspace is gated here.
+  const guardHook = async (input: unknown): Promise<HookJSONOutput> => {
+    const hi = input as PreToolUseHookInput;
+    if (hi.tool_name !== "Bash") return {};
+    const ti = (hi.tool_input ?? {}) as Record<string, unknown>;
+    const cmd = String(ti.command ?? "");
+    if (!isRiskyCommand(cmd)) return {};
+    const deny = (why: string): HookJSONOutput => ({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why },
+    });
+    if (!opts.ask) return deny("Risky command blocked: nobody is available to approve it. Explain what you would have run and continue without it.");
+    const ok = await opts.ask("Bash", toolLabel("Bash", ti), ti);
+    if (ok) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "George approved it." } };
+    return deny("George declined this command. Do not retry it; say what you would have done and continue otherwise.");
+  };
+
   const q = query({
     prompt: text,
     options: {
-      cwd: BRAIN_DIR,
+      cwd: ws.cwd,
       ...(chatId ? { resume: chatId } : {}),
-      model: DEFAULT_MODEL,
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append:
-          "You are Cortex, George's personal AI brain, accessed through a web chat interface. " +
-          "Follow the conventions in CLAUDE.md. Keep responses conversational and readable — " +
-          "this is a chat, not a terminal.",
-      },
+      model: opts.model ?? ws.model,
+      systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend(ws, !!opts.voice) },
       settingSources: ["project"],
       skills: "all",
-      allowedTools: [
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "WebSearch",
-        "WebFetch",
-        "Bash",
-        "TodoWrite",
-        "Task",
-        "Skill",
-      ],
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
+      allowedTools: BASE_TOOLS,
+      mcpServers: { cortex: cortexTools },
+      ...(ws.id === "brain" ? {} : { additionalDirectories: [BRAIN_DIR] }),
+      ...(guarded
+        ? {
+            permissionMode: "acceptEdits" as const,
+            canUseTool,
+            hooks: { PreToolUse: [{ matcher: "Bash", hooks: [guardHook], timeout: 660 }] },
+          }
+        : { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }),
       includePartialMessages: true,
       abortController: abort,
       stderr: (data: string) => {
@@ -44,5 +129,26 @@ export function runTurn(text: string, chatId: string | null): Run {
       },
     },
   });
-  return { q, abort };
+  return { q, abort, workspace: ws };
+}
+
+// Runs a turn to completion with no client attached (briefing, scheduled jobs).
+export async function runHeadless(
+  text: string,
+  opts: TurnOptions & { chatId?: string | null } = {},
+): Promise<{ chatId: string; text: string; costUsd?: number }> {
+  const run = runTurn(text, opts.chatId ?? null, opts);
+  let chatId = opts.chatId ?? "";
+  let out = "";
+  let costUsd: number | undefined;
+  for await (const msg of run.q) {
+    if (msg.type === "system" && msg.subtype === "init") chatId = msg.session_id;
+    else if (msg.type === "assistant" && !msg.parent_tool_use_id) {
+      const content = msg.message.content as Array<{ type: string; text?: string }>;
+      for (const b of content) if (b.type === "text" && b.text) out += (out ? "\n" : "") + b.text;
+    } else if (msg.type === "result") {
+      costUsd = msg.total_cost_usd || undefined;
+    }
+  }
+  return { chatId, text: out.trim(), costUsd };
 }
