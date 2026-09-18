@@ -10,7 +10,9 @@ export const FAST_MODEL = process.env.CORTEX_FAST_MODEL ?? "claude-sonnet-5";
 
 // Voice helpers live outside the repo (models are large).
 export const VOICE_DIR = process.env.CORTEX_VOICE_DIR ?? path.join(os.homedir(), "cortex-voice");
-export const WHISPER_MODEL = process.env.WHISPER_MODEL ?? path.join(VOICE_DIR, "models", "ggml-small.en.bin");
+export const WHISPER_MODEL = process.env.WHISPER_MODEL ?? path.join(VOICE_DIR, "models", "ggml-base.en.bin");
+export const WHISPER_SERVER_BIN = process.env.WHISPER_SERVER_BIN ?? "whisper-server";
+export const WHISPER_PORT = Number(process.env.WHISPER_PORT ?? 2022);
 export const WHISPER_BIN = process.env.WHISPER_BIN ?? "whisper-cli";
 export const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 export const PYTHON_BIN = process.env.CORTEX_PYTHON ?? path.join(VOICE_DIR, ".venv", "bin", "python");

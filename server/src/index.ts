@@ -7,7 +7,7 @@ import { BRAIN_DIR, HOST, PORT, DEFAULT_MODEL, FAST_MODEL } from "./config.js";
 import { chatsRouter, workspacesRouter } from "./chats.js";
 import { filesRouter } from "./files.js";
 import { attachWebSocket, broadcast } from "./ws.js";
-import { voiceRouter, warmTts } from "./voice.js";
+import { voiceRouter, warmTts, warmStt } from "./voice.js";
 import { briefingRouter, setBriefingBroadcast, startBriefingScheduler } from "./briefing.js";
 import { loadSettings, updateSettings } from "./settings.js";
 
@@ -60,5 +60,6 @@ server.listen(PORT, HOST, () => {
   console.log(`  auth:  ${auth}`);
   console.log(`  ntfy:  https://ntfy.sh/${s.ntfyTopic}`);
   warmTts();
+  warmStt();
   startBriefingScheduler();
 });

@@ -1,5 +1,12 @@
-import { query, type Query, type PermissionResult, type PreToolUseHookInput, type HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
-import { BRAIN_DIR } from "./config.js";
+import {
+  query,
+  type Query,
+  type Options,
+  type PermissionResult,
+  type PreToolUseHookInput,
+  type HookJSONOutput,
+} from "@anthropic-ai/claude-agent-sdk";
+import { BRAIN_DIR, FAST_MODEL } from "./config.js";
 import { getWorkspace, type Workspace } from "./workspaces.js";
 import { AUTO_ALLOWED, isRiskyCommand } from "./permissions.js";
 import { makeCortexTools, CORTEX_TOOL_NAMES, type ToolHooks } from "./tools.js";
@@ -15,6 +22,7 @@ export type TurnOptions = {
   /** Guarded workspaces call this for risky commands; resolve true to allow. */
   ask?: (toolName: string, label: string, input: unknown) => Promise<boolean>;
   hooks?: ToolHooks;
+  abort?: AbortController;
 };
 
 const BASE_TOOLS = [
@@ -39,11 +47,13 @@ function today(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function systemAppend(ws: Workspace, voice: boolean): string {
+function systemAppend(ws: Workspace): string {
   const now = new Date();
   const when = `${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, ${now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
   const parts: string[] = [];
-  parts.push(`You are Cortex, George's personal AI brain. Right now it is ${when} (local time). Today's journal is ${BRAIN_DIR}/journal/${today()}.md.`);
+  parts.push(
+    `You are Cortex, George's personal AI brain. This session started ${when} (local time); the conversation may continue for hours, so check the clock with Bash if timing matters. Today's journal is ${BRAIN_DIR}/journal/${today()}.md.`,
+  );
   if (ws.id === "brain") {
     parts.push("You are in the brain workspace: follow CLAUDE.md in this folder for the journal, memory, calendar, briefing and GTOD protocols.");
   } else {
@@ -54,30 +64,24 @@ function systemAppend(ws: Workspace, voice: boolean): string {
         `Edit code freely, run tests and builds, but never push, deploy, publish, or run anything destructive unless George says so in this conversation (a prompt will appear for those).`,
     );
   }
-  if (voice) {
-    parts.push(
-      "This turn arrived by voice and your reply will be read aloud. Answer in plain spoken sentences, at most four or five unless George asked for detail. No markdown headers, tables, bullet lists or code blocks; say file names and commands in words. If you need a decision, ask one question.",
-    );
-  } else {
-    parts.push("Replies are shown in a chat UI: conversational and readable, not a terminal dump.");
-  }
+  parts.push(
+    "Messages that arrive by voice are marked [Spoken message]: answer those in plain spoken sentences, briefly, with no markdown. Typed messages are shown in a chat UI: conversational and readable, not a terminal dump.",
+  );
   return parts.join("\n\n");
 }
 
-// The single place query() is called. cwd must be the workspace root so
-// session resume works (sessions are stored per cwd).
-export function runTurn(text: string, chatId: string | null, opts: TurnOptions = {}): Run {
-  const ws = getWorkspace(opts.workspaceId);
-  const abort = new AbortController();
+// Builds the SDK options for a workspace. Shared by single-shot runs and live sessions.
+export function buildOptions(ws: Workspace, chatId: string | null, opts: TurnOptions): Options {
   const guarded = ws.mode === "guarded";
   const cortexTools = makeCortexTools(opts.hooks ?? {});
+  const abort = opts.abort ?? new AbortController();
 
   const canUseTool = async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
     if (AUTO_ALLOWED.has(toolName) || toolName.startsWith("mcp__")) return { behavior: "allow", updatedInput: input };
     if (toolName === "Bash") {
       const cmd = String(input.command ?? "");
       if (!isRiskyCommand(cmd)) return { behavior: "allow", updatedInput: input };
-      if (!opts.ask) return { behavior: "deny", message: "Risky command blocked: no one is available to approve it. Ask George to run it or approve it in the app." };
+      if (!opts.ask) return { behavior: "deny", message: "Risky command blocked: no one is available to approve it." };
       const ok = await opts.ask(toolName, toolLabel(toolName, input), input);
       return ok
         ? { behavior: "allow", updatedInput: input }
@@ -86,8 +90,8 @@ export function runTurn(text: string, chatId: string | null, opts: TurnOptions =
     return { behavior: "allow", updatedInput: input };
   };
 
-  // Belt and braces: allowlisted tools skip canUseTool, but PreToolUse hooks
-  // always fire, so risky Bash in a guarded workspace is gated here.
+  // Allowlisted tools skip canUseTool, but PreToolUse hooks always fire, so
+  // risky Bash in a guarded workspace is gated here.
   const guardHook = async (input: unknown): Promise<HookJSONOutput> => {
     const hi = input as PreToolUseHookInput;
     if (hi.tool_name !== "Bash") return {};
@@ -103,32 +107,38 @@ export function runTurn(text: string, chatId: string | null, opts: TurnOptions =
     return deny("George declined this command. Do not retry it; say what you would have done and continue otherwise.");
   };
 
-  const q = query({
-    prompt: text,
-    options: {
-      cwd: ws.cwd,
-      ...(chatId ? { resume: chatId } : {}),
-      model: opts.model ?? ws.model,
-      systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend(ws, !!opts.voice) },
-      settingSources: ["project"],
-      skills: "all",
-      allowedTools: BASE_TOOLS,
-      mcpServers: { cortex: cortexTools },
-      ...(ws.id === "brain" ? {} : { additionalDirectories: [BRAIN_DIR] }),
-      ...(guarded
-        ? {
-            permissionMode: "acceptEdits" as const,
-            canUseTool,
-            hooks: { PreToolUse: [{ matcher: "Bash", hooks: [guardHook], timeout: 660 }] },
-          }
-        : { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }),
-      includePartialMessages: true,
-      abortController: abort,
-      stderr: (data: string) => {
-        if (process.env.CORTEX_DEBUG) console.error("[claude]", data);
-      },
+  return {
+    cwd: ws.cwd,
+    ...(chatId ? { resume: chatId } : {}),
+    model: opts.model ?? (opts.voice && ws.id === "brain" ? FAST_MODEL : ws.model),
+    ...(opts.voice ? { effort: "low" as const } : {}),
+    systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend(ws) },
+    settingSources: ["project"],
+    skills: "all",
+    allowedTools: BASE_TOOLS,
+    mcpServers: { cortex: cortexTools },
+    ...(ws.id === "brain" ? {} : { additionalDirectories: [BRAIN_DIR] }),
+    ...(guarded
+      ? {
+          permissionMode: "acceptEdits" as const,
+          canUseTool,
+          hooks: { PreToolUse: [{ matcher: "Bash", hooks: [guardHook], timeout: 660 }] },
+        }
+      : { permissionMode: "bypassPermissions" as const, allowDangerouslySkipPermissions: true }),
+    includePartialMessages: true,
+    abortController: abort,
+    stderr: (data: string) => {
+      if (process.env.CORTEX_DEBUG) console.error("[claude]", data);
     },
-  });
+  };
+}
+
+// Single-shot turn (used by headless jobs such as the briefing).
+export function runTurn(text: string, chatId: string | null, opts: TurnOptions = {}): Run {
+  const ws = getWorkspace(opts.workspaceId);
+  const abort = opts.abort ?? new AbortController();
+  const hint = opts.voice ? "[Spoken message. Reply will be read aloud: plain sentences, no markdown or lists.]\n\n" : "";
+  const q = query({ prompt: hint + text, options: buildOptions(ws, chatId, { ...opts, abort }) });
   return { q, abort, workspace: ws };
 }
 

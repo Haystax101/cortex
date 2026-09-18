@@ -64,6 +64,7 @@ class Mouth:
 
     def __init__(self) -> None:
         self.q: queue.Queue[str | None] = queue.Queue()
+        self._cache: dict = {}
         self.gen = 0
         self.speaking = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -80,23 +81,36 @@ class Mouth:
             self.q.queue.clear()
         sd.stop()
 
-    def _fetch(self, text: str) -> np.ndarray | None:
+    def _fetch(self, text: str):
+        cached = self._cache.pop(text, None)
+        if cached is not None:
+            return cached.result()
         try:
             r = requests.post(f"{SERVER}/api/voice/tts", json={"text": text}, timeout=60)
             if r.status_code != 200:
                 return None
             data, sr = sf.read(io.BytesIO(r.content), dtype="float32")
-            return (data, sr)  # type: ignore[return-value]
+            return (data, sr)
         except Exception as e:  # noqa: BLE001
             log(f"tts error: {e}")
             return None
 
     def _loop(self) -> None:
-        pending = None
+        # Pipeline: synthesis of the next sentence runs while the current one plays.
+        from concurrent.futures import ThreadPoolExecutor
+
+        pool = ThreadPoolExecutor(max_workers=2)
         while True:
             text = self.q.get()
             gen = self.gen
-            clip = self._fetch(text)
+            fut = pool.submit(self._fetch, text)
+            # Prefetch whatever is already queued behind this sentence.
+            ahead = []
+            with self.q.mutex:
+                queued = list(self.q.queue)
+            for nxt in queued[:2]:
+                ahead.append(pool.submit(self._fetch, nxt))
+            clip = fut.result()
             if clip is None or gen != self.gen:
                 continue
             data, sr = clip
@@ -104,7 +118,10 @@ class Mouth:
             sd.play(data, sr)
             sd.wait()
             self.speaking.clear()
-            del pending
+            # Hand prefetched results back through a small cache so the next
+            # iteration doesn't re-request them.
+            for nxt, f in zip(queued[:2], ahead):
+                self._cache[nxt] = f
 
 
 def clean(text: str) -> str:

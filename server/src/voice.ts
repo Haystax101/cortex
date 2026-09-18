@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
-import { FFMPEG_BIN, PYTHON_BIN, VOICE_DIR, WHISPER_BIN, WHISPER_MODEL } from "./config.js";
+import { FFMPEG_BIN, PYTHON_BIN, VOICE_DIR, WHISPER_BIN, WHISPER_MODEL, WHISPER_PORT, WHISPER_SERVER_BIN } from "./config.js";
 import { loadSettings } from "./settings.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +103,74 @@ export async function synthesize(text: string, voice?: string, speed?: number): 
 
 // ---------------------------------------------------------------- STT
 
+// A persistent whisper-server keeps the model loaded: ~0.15s per clip instead of
+// ~0.7s with whisper-cli. Falls back to the CLI if the server is not up.
+let whisperProc: ReturnType<typeof spawn> | null = null;
+let whisperUp = false;
+
+export function warmStt() {
+  if (whisperProc || !fs.existsSync(WHISPER_MODEL)) return;
+  const p = spawn(WHISPER_SERVER_BIN, ["-m", WHISPER_MODEL, "--host", "127.0.0.1", "--port", String(WHISPER_PORT), "-t", "6", "--convert"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  whisperProc = p;
+  p.stderr?.on("data", (d) => {
+    if (process.env.CORTEX_DEBUG) console.error("[whisper]", d.toString().trim());
+  });
+  p.on("exit", (code) => {
+    console.error(`[whisper] server exited (${code})`);
+    whisperProc = null;
+    whisperUp = false;
+    setTimeout(warmStt, 5000);
+  });
+  const probe = async () => {
+    for (let i = 0; i < 40; i++) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { method: "GET" });
+        if (r.status < 500) {
+          whisperUp = true;
+          console.log(`[whisper] server ready on :${WHISPER_PORT}`);
+          // First inference compiles Metal shaders (~5s); do it now, not on George's first word.
+          void transcribeViaServer(silentWav(), "warm.wav").then(() => console.log("[whisper] warmed up"));
+          return;
+        }
+      } catch {
+        // not yet
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  };
+  void probe();
+}
+
+// 0.6s of 16kHz silence as a WAV buffer.
+function silentWav(): Buffer {
+  const samples = 16000 * 0.6;
+  const data = Buffer.alloc(44 + samples * 2);
+  data.write("RIFF", 0); data.writeUInt32LE(36 + samples * 2, 4); data.write("WAVE", 8);
+  data.write("fmt ", 12); data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20); data.writeUInt16LE(1, 22);
+  data.writeUInt32LE(16000, 24); data.writeUInt32LE(32000, 28); data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34);
+  data.write("data", 36); data.writeUInt32LE(samples * 2, 40);
+  return data;
+}
+
+async function transcribeViaServer(audio: Buffer, filename: string): Promise<string | null> {
+  if (!whisperUp) return null;
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(audio)]), filename);
+    form.append("response_format", "json");
+    form.append("prompt", WHISPER_PROMPT);
+    form.append("temperature", "0");
+    const r = await fetch(`http://127.0.0.1:${WHISPER_PORT}/inference`, { method: "POST", body: form });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { text?: string };
+    return (j.text ?? "").replace(/\s+/g, " ").trim();
+  } catch {
+    return null;
+  }
+}
+
 function run(cmd: string, args: string[], input?: Buffer): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -120,6 +188,9 @@ export async function transcribe(audio: Buffer, mimeHint?: string): Promise<stri
   const id = crypto.randomUUID();
   const src = path.join(TMP, `${id}.in`);
   const wav = path.join(TMP, `${id}.wav`);
+  const ext = mimeHint?.includes("wav") ? "wav" : mimeHint?.includes("mp4") ? "mp4" : mimeHint?.includes("ogg") ? "ogg" : "webm";
+  const fast = await transcribeViaServer(audio, `clip.${ext}`);
+  if (fast !== null) return fast;
   await fsp.writeFile(src, audio);
   try {
     await run(FFMPEG_BIN, ["-y", "-loglevel", "error", "-i", src, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav]);
@@ -134,7 +205,6 @@ export async function transcribe(audio: Buffer, mimeHint?: string): Promise<stri
   } finally {
     void fsp.rm(src, { force: true });
     void fsp.rm(wav, { force: true });
-    void mimeHint;
   }
 }
 
@@ -148,6 +218,7 @@ voiceRouter.get("/status", (_req, res) => {
   res.json({
     tts: ttsAvailable,
     stt: fs.existsSync(WHISPER_MODEL),
+    sttServer: whisperUp,
     voice: loadSettings().voice,
     speakReplies: loadSettings().speakReplies,
   });
