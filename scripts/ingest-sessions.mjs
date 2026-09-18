@@ -179,19 +179,33 @@ Dated bullets: decision and reason.
 ## Reference
 Links, commands, file paths, environment names, anything George keeps looking up.
 
-Be thorough: this file may be 800–2000 words. Every claim must come from the current file or the digests. Do not invent. Do not include a log of your own edits.`;
+If the current file has a "## Notes from George" section, reproduce it verbatim at the end. Be thorough: this file may be 800–2000 words. Every claim must come from the current file or the digests. Do not invent. Do not include a log of your own edits.`;
 
 async function runSynthesis() {
   const today = new Date().toISOString().slice(0, 10);
   for (const [project, rel] of Object.entries(PROJECT_FILE)) {
     if (onlyProject && project !== onlyProject) continue;
-    const dir = path.join(SUMM_DIR, project);
-    if (!fs.existsSync(dir)) continue;
-    const digests = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".md"))
-      .sort()
-      .map((f) => `--- DIGEST ${f} ---\n${fs.readFileSync(path.join(dir, f), "utf8")}`);
+    // Digests filed under this project, plus any digest elsewhere that talks
+    // about it a lot (sessions run from the sandbox folder about a landing page, say).
+    const KEYWORDS = {
+      supercharged: /supercharged|scrollwise/gi,
+      vantaphai: /vantaphai|vantaphai/gi,
+      gtod: /get there one day|\bgtod\b|\bcharge\b/gi,
+      cortex: /\bcortex\b|voice-line|\bbrain\b/gi,
+    };
+    const picked = [];
+    for (const proj of fs.readdirSync(SUMM_DIR)) {
+      const d = path.join(SUMM_DIR, proj);
+      if (proj.startsWith("_") || proj.startsWith(".") || !fs.statSync(d).isDirectory()) continue;
+      for (const f of fs.readdirSync(d).filter((f) => f.endsWith(".md"))) {
+        const text = fs.readFileSync(path.join(d, f), "utf8");
+        const own = proj === project;
+        const mentions = (text.match(KEYWORDS[project]) ?? []).length;
+        if (own || mentions >= 4) picked.push({ f, text, own, mentions });
+      }
+    }
+    picked.sort((a, b) => a.f.localeCompare(b.f));
+    const digests = picked.map((p) => `--- DIGEST ${p.f}${p.own ? "" : " (filed under another project)"} ---\n${p.text}`);
     if (!digests.length) continue;
     const file = path.join(BRAIN, rel);
     const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : `# ${project}\n`;
