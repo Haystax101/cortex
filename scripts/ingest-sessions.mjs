@@ -64,10 +64,11 @@ async function ask(system, prompt) {
       model: MODEL,
       systemPrompt: system,
       settingSources: [],
+      tools: [],
       allowedTools: [],
-      disallowedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Skill", "TodoWrite"],
+      disallowedTools: ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Skill", "TodoWrite", "ToolSearch", "NotebookEdit"],
       permissionMode: "dontAsk",
-      maxTurns: 1,
+      maxTurns: 4,
       effort: "low",
     },
   });
@@ -101,7 +102,7 @@ Bullets: unfinished work, questions, ideas parked for later.
 ## Facts worth remembering
 Bullets: durable facts about the product, the codebase, George's preferences or plans.
 
-Be specific and complete rather than short; 300–900 words. Never invent; if the transcript is truncated, say what part is missing.`;
+Reply with the digest only, as text; you have no tools and must not try to read files or fetch URLs. Be specific and complete rather than short; 300–900 words. Never invent; if the transcript is truncated, say what part is missing.`;
 
 async function summarise(sess) {
   const transcript = py(["show", sess.id]);
