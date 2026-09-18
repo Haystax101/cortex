@@ -57,6 +57,18 @@ export const WORKSPACES: Workspace[] = [
   },
 ];
 
+export const CORTEX_APP_DIR = path.join(home, "workspace", "agent-sandbox", "cortex");
+
+WORKSPACES.push({
+  id: "cortex",
+  name: "Cortex",
+  cwd: CORTEX_APP_DIR,
+  color: "#a78bfa",
+  mode: "guarded",
+  model: DEFAULT_MODEL,
+  blurb: "Cortex's own code: add abilities, change permissions",
+});
+
 export const BRIEFING_MODEL = FAST_MODEL;
 
 export function getWorkspace(id: string | undefined | null): Workspace {
@@ -80,6 +92,7 @@ export function matchWorkspace(text: string): Workspace | null {
   if (/\bvanta/.test(t)) return getWorkspace("vantaphai");
   if (/\bsupercharged|\bspc\b/.test(t)) return getWorkspace("supercharged");
   if (/get there one day|\bgtod\b|\bpodcast\b/.test(t)) return getWorkspace("gtod");
+  if (/\bcortex\b|\byourself\b|\byour (own )?code\b/.test(t)) return getWorkspace("cortex");
   if (/\bbrain\b|\bjournal\b|\bcalendar\b/.test(t)) return getWorkspace("brain");
   return null;
 }

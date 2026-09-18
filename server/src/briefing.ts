@@ -1,4 +1,7 @@
 import { Router } from "express";
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { runHeadless } from "./agent.js";
 import { BRIEFING_MODEL, getWorkspace } from "./workspaces.js";
@@ -23,6 +26,19 @@ const PROMPT = (date: string) =>
   `It is the morning of ${date}. Run the briefing skill for today. Read the calendar with cortex-cal, yesterday's journal, every projects/*.md, gtod/content-log.md, internships/tracker.md and tools/git-activity.sh. ` +
   `Write the briefing into today's journal under "## Briefing" (create the journal file from the template if needed), then reply with the spoken-style briefing: under 200 words, plain sentences, at most one question at the end.`;
 
+// Summarise new Claude Code sessions into the brain and refresh projects/*.md.
+const INGEST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/ingest-sessions.mjs");
+export function ingestSessions(): Promise<string> {
+  return new Promise((resolve) => {
+    console.log("[ingest] summarising new sessions");
+    execFile(process.execPath, [INGEST, "--all"], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000 }, (err, stdout, stderr) => {
+      if (err) console.error("[ingest] failed:", err.message, stderr.slice(-500));
+      else console.log("[ingest] done:", stdout.trim().split("\n").slice(-3).join(" | "));
+      resolve(stdout);
+    });
+  });
+}
+
 export function runBriefing(force = false): Promise<{ chatId: string; text: string }> {
   if (running) return running;
   const date = localDate();
@@ -34,6 +50,7 @@ export function runBriefing(force = false): Promise<{ chatId: string; text: stri
     console.log(`[briefing] running for ${date}`);
     broadcast({ type: "briefing.status", running: true, date });
     try {
+      if (!force) await ingestSessions();
       const { chatId, text } = await runHeadless(PROMPT(date), {
         workspaceId: "brain",
         model: BRIEFING_MODEL,
@@ -75,6 +92,11 @@ export const briefingRouter = Router();
 briefingRouter.get("/", (_req, res) => {
   const s = loadSettings();
   res.json({ date: s.lastBriefingDate ?? null, chatId: s.lastBriefingChatId ?? null, running: !!running, hour: s.briefingHour });
+});
+
+briefingRouter.post("/ingest", async (_req, res) => {
+  const out = await ingestSessions();
+  res.json({ ok: true, tail: out.trim().split("\n").slice(-5) });
 });
 
 briefingRouter.post("/", async (req, res) => {

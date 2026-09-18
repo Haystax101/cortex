@@ -56,6 +56,13 @@ function systemAppend(ws: Workspace): string {
   );
   if (ws.id === "brain") {
     parts.push("You are in the brain workspace: follow CLAUDE.md in this folder for the journal, memory, calendar, briefing and GTOD protocols.");
+  } else if (ws.id === "cortex") {
+    parts.push(
+      `You are working on your own source code: the Cortex app at ${ws.cwd} (server/ is the Express + Claude Agent SDK backend, web/ the React UI, voice/ the desk client, scripts/ ingestion jobs). ` +
+        `George's brain at ${BRAIN_DIR} is attached; its CLAUDE.md and tools/ are yours to change too. Read ${ws.cwd}/README.md and ${BRAIN_DIR}/projects/cortex.md first. ` +
+        `When George suggests something Cortex should be able to do: design it briefly, implement it, run \`npx tsc --noEmit\` in server/ and \`npm run build\` in web/, commit in the agent-sandbox repo with a clear message, then restart yourself with ${BRAIN_DIR}/tools/restart-cortex.sh as the LAST thing you do in the turn (say so first; the restart drops this session for a few seconds). ` +
+        `Permission rules live in server/src/permissions.ts and workspaces in server/src/workspaces.ts; you may loosen or tighten them when George asks, and must tell him what changed.`,
+    );
   } else {
     parts.push(
       `You are working inside George's ${ws.name} repo at ${ws.cwd}. Follow that repo's CLAUDE.md and conventions. ` +
