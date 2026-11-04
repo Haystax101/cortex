@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../state/store";
 import { relativeTime } from "../lib/format";
+import { ACTIVE, useCortex } from "../state/cortex";
 
 export function Sidebar() {
   const chats = useStore((s) => s.chats);
@@ -19,6 +20,12 @@ export function Sidebar() {
   const openBriefing = useStore((s) => s.openBriefing);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);
+  const view = useCortex((s) => s.view);
+  const setView = useCortex((s) => s.setView);
+  const tasks = useCortex((s) => s.tasks);
+  const working = tasks.filter((t) => ACTIVE.includes(t.status)).length;
+  const needsYou = tasks.filter((t) => t.status === "waiting" || t.approvals.length).length;
+  const toChat = () => setView("chat");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
@@ -50,9 +57,29 @@ export function Sidebar() {
           </button>
         </div>
 
+        {/* Conductor */}
+        <button
+          onClick={() => {
+            setView("cortex");
+            setSidebarOpen(false);
+          }}
+          className={`mx-3 mb-2 flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition ${
+            view === "cortex" ? "border-pulse/50 bg-pulse/15 text-snow" : "border-edge text-fog hover:text-snow"
+          }`}
+        >
+          <span>◉</span>
+          <span className="flex-1">Cortex</span>
+          {needsYou > 0 && <span className="rounded-full bg-amber-500/30 px-1.5 text-[10px] text-amber-200">{needsYou}</span>}
+          {working > 0 && <span className="rounded-full bg-pulse/30 px-1.5 text-[10px] text-pulse-soft">{working} working</span>}
+        </button>
+
         {/* Briefing */}
         <button
-          onClick={() => (briefingIsToday ? openBriefing() : void runBriefing())}
+          onClick={() => {
+            toChat();
+            if (briefingIsToday) openBriefing();
+            else void runBriefing();
+          }}
           disabled={briefingRunning || busy}
           className="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-wire/30 bg-wire/10 px-3 py-2 text-left text-xs text-wire transition hover:bg-wire/20 disabled:opacity-50"
         >
@@ -83,7 +110,10 @@ export function Sidebar() {
               return (
                 <button
                   key={w.id}
-                  onClick={() => setWorkspace(w.id)}
+                  onClick={() => {
+                    toChat();
+                    setWorkspace(w.id);
+                  }}
                   disabled={busy || !w.available}
                   title={w.available ? `${w.blurb}\n${w.cwd}` : `Folder not found: ${w.cwd}`}
                   className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11.5px] transition disabled:opacity-40 ${
@@ -103,7 +133,10 @@ export function Sidebar() {
         </div>
 
         <button
-          onClick={() => selectChat(null)}
+          onClick={() => {
+            toChat();
+            selectChat(null);
+          }}
           disabled={busy}
           className="mx-3 mb-3 rounded-lg border border-pulse/40 bg-pulse/10 px-3 py-2 text-sm font-medium text-pulse-soft transition hover:bg-pulse/20 disabled:opacity-40"
         >
@@ -136,7 +169,13 @@ export function Sidebar() {
                     />
                   </form>
                 ) : (
-                  <button onClick={() => selectChat(c.id)} className="block w-full px-3 py-2 text-left">
+                  <button
+                    onClick={() => {
+                      toChat();
+                      selectChat(c.id);
+                    }}
+                    className="block w-full px-3 py-2 text-left"
+                  >
                     <div className="truncate pr-10 text-[13px] leading-snug">{c.title}</div>
                     <div className="mt-0.5 text-[10px] text-fog">{relativeTime(c.updatedAt)}</div>
                   </button>

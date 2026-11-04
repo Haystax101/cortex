@@ -12,6 +12,12 @@ export type CortexSettings = {
   briefingHour: number; // local hour after which the daily briefing may run
   lastBriefingDate?: string; // YYYY-MM-DD
   lastBriefingChatId?: string;
+  /** Background workers allowed to run at once (they share the subscription's limits). */
+  maxParallel: number;
+  /** Allow tasks to be dispatched to Claude Code cloud sessions (claude --cloud). Off until George opts in. */
+  cloudEnabled: boolean;
+  /** Conductor speaks up when a task finishes, asks a question or needs approval. */
+  announceUpdates: boolean;
 };
 
 const DIR = path.join(os.homedir(), ".cortex");
@@ -22,6 +28,9 @@ const DEFAULTS: CortexSettings = {
   voice: "bm_lewis",
   speakReplies: true,
   briefingHour: 7,
+  maxParallel: 3,
+  cloudEnabled: false,
+  announceUpdates: true,
 };
 
 export function loadSettings(): CortexSettings {

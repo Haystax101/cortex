@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@anthropic-ai/sdk": "^1.4.0",
     "express": "^4.21.2",
     "mime-types": "^2.1.35",
     "multer": "^2.0.1",

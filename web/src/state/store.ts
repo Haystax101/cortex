@@ -3,6 +3,7 @@ import type { ChatMeta, PermissionAsk, ServerFrame, TreeNode, UIBlock, UIMessage
 import { api } from "../lib/api";
 import { wsClient } from "../lib/ws";
 import { speaker } from "../lib/speech";
+import { useCortex } from "./cortex";
 
 // Key used for a brand-new chat's transcript until the server assigns a session id.
 const NEW = "__new__";
@@ -75,6 +76,11 @@ function writePref(key: string, v: unknown) {
 
 export const useStore = create<CortexStore>((set, get) => {
   function handleFrame(f: ServerFrame) {
+    if (f.type.startsWith("cx.") || f.type.startsWith("task.") || f.type === "ideas.update") return useCortex.getState().handle(f);
+    if (f.type === "workspaces.changed") {
+      void api.workspaces().then((workspaces) => set({ workspaces }));
+      return;
+    }
     const s = get();
     switch (f.type) {
       case "chat.session": {
@@ -246,6 +252,7 @@ export const useStore = create<CortexStore>((set, get) => {
       wsClient.connect(handleFrame, (connected) => {
         const wasBusy = get().busy;
         set({ connected });
+        if (connected) useCortex.getState().init();
         if (connected && wasBusy) {
           const id = get().streamChatId;
           set({ busy: false, streamBlocks: null, streamChatId: null });
@@ -265,6 +272,7 @@ export const useStore = create<CortexStore>((set, get) => {
         if (b.chatId && b.date) set({ lastBriefing: { chatId: b.chatId, date: b.date }, briefingRunning: b.running });
       });
       void get().refreshTree();
+      useCortex.getState().init();
     },
 
     refreshChats: async () => {

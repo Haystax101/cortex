@@ -4,6 +4,8 @@ import { toolLabel } from "./labels.js";
 import { createAsk, resolveAsk } from "./permissions.js";
 import { getLive, openSession, register, unregister, type LiveSession } from "./sessions.js";
 import type { ClientFrame, ServerFrame } from "./frames.js";
+import { bus } from "./bus.js";
+import { say, interrupt as interruptConductor } from "./conductor.js";
 
 // Chats with a turn in flight — also consulted by the delete endpoint.
 export const busyChats = new Set<string>();
@@ -107,6 +109,7 @@ async function pumpSession(session: LiveSession) {
 
 export function attachWebSocket(server: Server) {
   const wss = new WebSocketServer({ server, path: "/ws" });
+  bus.on("frame", (f: ServerFrame) => broadcast(f));
 
   wss.on("connection", (ws) => {
     clients.add(ws);
@@ -158,6 +161,10 @@ export function attachWebSocket(server: Server) {
         void s.send(text, { voice: !!voice });
       } else if (frame.type === "chat.interrupt") {
         getLive(frame.chatId)?.interrupt();
+      } else if (frame.type === "cx.say") {
+        if (typeof frame.text === "string") void say(frame.text, !!frame.voice);
+      } else if (frame.type === "cx.interrupt") {
+        interruptConductor();
       } else if (frame.type === "permission.reply") {
         if (resolveAsk(frame.id, !!frame.allow)) broadcast({ type: "permission.resolved", id: frame.id, allow: !!frame.allow });
       }

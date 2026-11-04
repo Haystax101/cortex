@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renameSession } from "@anthropic-ai/claude-agent-sdk";
-import { runHeadless } from "./agent.js";
+import { runHeadless, workerEnv } from "./agent.js";
 import { BRIEFING_MODEL, getWorkspace } from "./workspaces.js";
 import { loadSettings, updateSettings } from "./settings.js";
 import { sendNtfy } from "./tools.js";
@@ -31,7 +31,7 @@ const INGEST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 export function ingestSessions(): Promise<string> {
   return new Promise((resolve) => {
     console.log("[ingest] summarising new sessions");
-    execFile(process.execPath, [INGEST, "--all"], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [INGEST, "--all"], { maxBuffer: 8 * 1024 * 1024, timeout: 60 * 60_000, env: workerEnv() as NodeJS.ProcessEnv }, (err, stdout, stderr) => {
       if (err) console.error("[ingest] failed:", err.message, stderr.slice(-500));
       else console.log("[ingest] done:", stdout.trim().split("\n").slice(-3).join(" | "));
       resolve(stdout);

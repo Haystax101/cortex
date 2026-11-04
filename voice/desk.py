@@ -5,8 +5,10 @@ Hold RIGHT OPTION anywhere in macOS to talk; release to send. The reply is spoke
 sentence by sentence through the server's Kokoro TTS. Optional wake word
 ("hey jarvis" pretrained model; a custom "cortex" model can be dropped in) with --wake.
 
-Runs against the Cortex server (default http://127.0.0.1:3001). Keeps one chat per
-workspace and follows switch_workspace calls made by the model.
+Runs against the Cortex server (default http://127.0.0.1:3001). By default it talks
+to the conductor (fast Haiku front end that dispatches background workers) and
+speaks worker updates as they arrive. --chat keeps the old behaviour: one chat per
+workspace, following switch_workspace calls made by the model.
 
 Must be launched from a Terminal window (not launchd) so macOS grants microphone
 and Input Monitoring permissions to Terminal.
@@ -272,18 +274,107 @@ class Chat:
             log(f"permission reply failed: {e}")
 
 
+class Conductor:
+    """Talks to the Cortex conductor (the fast voice front end) instead of a
+    workspace chat. Approvals, task questions and workspace routing are all
+    handled by the conductor itself, so this just speaks what comes back."""
+
+    def __init__(self, mouth: Mouth) -> None:
+        self.mouth = mouth
+
+    def _connect(self):
+        import websocket  # websocket-client
+
+        url = SERVER.replace("http", "ws", 1) + "/ws"
+        return websocket.create_connection(url, timeout=120)
+
+    def send(self, text: str) -> None:
+        log(f"you: {text}")
+        try:
+            ws = self._connect()
+        except Exception as e:  # noqa: BLE001
+            log(f"cannot reach server: {e}")
+            self.mouth.say("I can't reach the Cortex server.")
+            return
+        self.mouth.stop()
+        ws.send(json.dumps({"type": "cx.say", "text": text, "voice": True}))
+        turn = None
+        buf = ""
+        spoken = ""
+        try:
+            while True:
+                f = json.loads(ws.recv())
+                t = f.get("type")
+                if t == "cx.start" and f.get("source") == "george" and turn is None:
+                    turn = f["turnId"]
+                elif t == "cx.delta" and f.get("turnId") == turn:
+                    buf += f["text"]
+                    spoken += f["text"]
+                    while True:
+                        m = SENTENCE.match(buf)
+                        if not m:
+                            break
+                        self.mouth.say(m.group(0))
+                        buf = buf[m.end():]
+                elif t == "cx.done" and f.get("turnId") == turn:
+                    if buf.strip():
+                        self.mouth.say(buf)
+                    log(f"cortex: {clean(spoken)[:300]}")
+                    break
+                elif t == "cx.error":
+                    log(f"error: {f.get('error')}")
+                    self.mouth.say("The conductor hit an error.")
+                    break
+        except Exception as e:  # noqa: BLE001
+            log(f"conductor connection dropped: {e}")
+        finally:
+            ws.close()
+
+    def listen_updates(self) -> None:
+        """Background thread: speak the conductor's worker updates (task done,
+        question, approval needed) as they happen."""
+        import websocket  # websocket-client
+
+        url = SERVER.replace("http", "ws", 1) + "/ws"
+        while True:
+            try:
+                ws = websocket.create_connection(url, timeout=None)
+                turns: set[str] = set()
+                buf = ""
+                while True:
+                    f = json.loads(ws.recv())
+                    t = f.get("type")
+                    if t == "cx.start" and f.get("source") == "update":
+                        turns.add(f["turnId"])
+                    elif t == "cx.delta" and f.get("turnId") in turns:
+                        buf += f["text"]
+                    elif t == "cx.done" and f.get("turnId") in turns:
+                        turns.discard(f["turnId"])
+                        if buf.strip() and not f.get("silent"):
+                            log(f"update: {clean(buf)[:300]}")
+                            self.mouth.say(buf)
+                        buf = ""
+            except Exception as e:  # noqa: BLE001
+                log(f"update listener reconnecting: {e}")
+                time.sleep(3)
+
+
 # ----------------------------------------------------------------- main
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--wake", action="store_true", help="also listen for the wake word (hey jarvis / cortex model if present)")
-    ap.add_argument("--workspace", help="start in this workspace")
+    ap.add_argument("--workspace", help="start in this workspace (legacy chat mode)")
+    ap.add_argument("--chat", action="store_true", help="talk to a workspace chat directly instead of the conductor")
+    ap.add_argument("--no-updates", action="store_true", help="don't speak worker updates from the conductor")
     args = ap.parse_args()
 
     mouth = Mouth()
     ear = Ear()
-    chat = Chat(mouth)
-    if args.workspace:
+    chat = Chat(mouth) if (args.chat or args.workspace) else Conductor(mouth)
+    if isinstance(chat, Conductor) and not args.no_updates:
+        threading.Thread(target=chat.listen_updates, daemon=True).start()
+    if args.workspace and isinstance(chat, Chat):
         chat.state["workspace"] = args.workspace
         save_state(chat.state)
 
@@ -330,7 +421,8 @@ def main() -> None:
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
-    log(f"Cortex desk client ready. Hold RIGHT OPTION to talk. Workspace: {chat.state.get('workspace', 'brain')}")
+    mode = f"workspace chat: {chat.state.get('workspace', 'brain')}" if isinstance(chat, Chat) else "conductor"
+    log(f"Cortex desk client ready. Hold RIGHT OPTION to talk ({mode}).")
 
     if args.wake:
         threading.Thread(target=wake_loop, args=(mouth, ear, chat, busy, holding), daemon=True).start()

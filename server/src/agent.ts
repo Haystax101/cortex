@@ -23,7 +23,19 @@ export type TurnOptions = {
   ask?: (toolName: string, label: string, input: unknown) => Promise<boolean>;
   hooks?: ToolHooks;
   abort?: AbortController;
+  /** Extra system prompt text (background workers describe their role here). */
+  extraSystem?: string;
 };
+
+// The conductor's API key must never reach the Claude Code engine: with
+// ANTHROPIC_API_KEY set, Claude Code bills the API instead of the subscription.
+export function workerEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.CORTEX_ANTHROPIC_KEY;
+  return env;
+}
 
 const BASE_TOOLS = [
   "Read",
@@ -119,7 +131,8 @@ export function buildOptions(ws: Workspace, chatId: string | null, opts: TurnOpt
     ...(chatId ? { resume: chatId } : {}),
     model: opts.model ?? (opts.voice && ws.id === "brain" ? FAST_MODEL : ws.model),
     ...(opts.voice ? { effort: "low" as const } : {}),
-    systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend(ws) },
+    systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend(ws) + (opts.extraSystem ? `\n\n${opts.extraSystem}` : "") },
+    env: workerEnv(),
     settingSources: ["project"],
     skills: "all",
     allowedTools: BASE_TOOLS,

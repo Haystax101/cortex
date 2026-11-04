@@ -10,6 +10,8 @@ import { attachWebSocket, broadcast } from "./ws.js";
 import { voiceRouter, warmTts, warmStt } from "./voice.js";
 import { briefingRouter, setBriefingBroadcast, startBriefingScheduler } from "./briefing.js";
 import { loadSettings, updateSettings } from "./settings.js";
+import { conductorRouter, conductorConfigured, CONDUCTOR_MODEL } from "./conductor.js";
+import { boardRouter } from "./board.js";
 
 if (!fs.existsSync(BRAIN_DIR)) {
   console.error(`Brain directory not found: ${BRAIN_DIR}`);
@@ -24,10 +26,12 @@ app.use("/api/workspaces", workspacesRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/voice", voiceRouter);
 app.use("/api/briefing", briefingRouter);
+app.use("/api/conductor", conductorRouter);
+app.use("/api/board", boardRouter);
 
 app.get("/api/settings", (_req, res) => res.json(loadSettings()));
 app.patch("/api/settings", (req, res) => {
-  const allowed = ["voice", "speakReplies", "briefingHour", "ntfyTopic"] as const;
+  const allowed = ["voice", "speakReplies", "briefingHour", "ntfyTopic", "maxParallel", "cloudEnabled", "announceUpdates"] as const;
   const patch: Record<string, unknown> = {};
   for (const k of allowed) if (k in (req.body ?? {})) patch[k] = req.body[k];
   res.json(updateSettings(patch));
@@ -52,13 +56,14 @@ attachWebSocket(server);
 setBriefingBroadcast(broadcast);
 
 server.listen(PORT, HOST, () => {
-  const auth = process.env.ANTHROPIC_API_KEY ? "API key" : "Claude subscription (CLI login)";
+  const auth = "Claude subscription (CLI login); API keys are stripped from engine processes";
   const s = loadSettings();
   console.log(`Cortex server → http://${HOST}:${PORT}`);
   console.log(`  brain: ${BRAIN_DIR}`);
   console.log(`  model: ${DEFAULT_MODEL} (fast: ${FAST_MODEL})`);
   console.log(`  auth:  ${auth}`);
   console.log(`  ntfy:  https://ntfy.sh/${s.ntfyTopic}`);
+  console.log(`  conductor: ${CONDUCTOR_MODEL} via API ${conductorConfigured() ? "(key found)" : "(NO KEY: save it to ~/.cortex/anthropic-key)"}`);
   warmTts();
   warmStt();
   startBriefingScheduler();

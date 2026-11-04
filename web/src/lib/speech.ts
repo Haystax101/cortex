@@ -13,6 +13,9 @@ class Speaker {
   private generation = 0;
   private listeners = new Set<(speaking: boolean) => void>();
   private speakingCount = 0;
+  // True until the first chunk of an utterance is queued. The first chunk is cut
+  // at the first clause boundary so audio starts while the model is still writing.
+  private fresh = true;
 
   setEnabled(v: boolean) {
     this.enabled = v;
@@ -38,9 +41,23 @@ class Speaker {
     }
   }
 
+  isSpeaking() {
+    return this.speakingCount > 0;
+  }
+
   feed(delta: string) {
     if (!this.enabled) return;
     this.pending += delta;
+    if (this.fresh) {
+      const clause = /^[\s\S]{12,}?(?:[.!?]+["')\]]?|[,;:\u2014\u2013])\s/.exec(this.pending);
+      if (clause) {
+        this.enqueue(clause[0]);
+        this.pending = this.pending.slice(clause[0].length);
+        this.fresh = false;
+      } else {
+        return;
+      }
+    }
     // Flush complete sentences; keep the tail.
     const re = /([^.!?\n]+[.!?]+["')\]]?\s+|[^\n]+\n+)/g;
     let m: RegExpExecArray | null;
@@ -50,9 +67,18 @@ class Speaker {
       consumed = re.lastIndex;
     }
     if (consumed) this.pending = this.pending.slice(consumed);
+    // A very long run-on sentence: speak what we have at a word boundary.
+    if (this.pending.length > 180) {
+      const cut = this.pending.lastIndexOf(" ", 160);
+      if (cut > 40) {
+        this.enqueue(this.pending.slice(0, cut));
+        this.pending = this.pending.slice(cut + 1);
+      }
+    }
   }
 
   flush() {
+    this.fresh = true;
     if (!this.enabled) {
       this.pending = "";
       return;
@@ -64,6 +90,7 @@ class Speaker {
 
   stop() {
     this.generation++;
+    this.fresh = true;
     this.pending = "";
     this.queue = Promise.resolve();
     if (this.audio) {
